@@ -9,6 +9,8 @@
 
 #define	DEBUG 1
 
+const char *METADATA_OBJECT_NAME = "metadata";
+
 json_t *metadata_json = NULL;
 json_error_t error_json;
 
@@ -64,7 +66,7 @@ void fil_rados_destroy() {
     rados_shutdown(ceph_cluster);
 }
 
-/*  focus on normal io for now */
+/*  focus on normal io for now 
 
 fil_aio_read() {
 
@@ -86,13 +88,12 @@ fil_aio_write() {
 */
 int fil_close(FILErados_t* fp) {
 	
-	
 	if (fp) {
 		if (fp->metadata.name) {
             /* Decrement number of reference */
             _fil_decrement_n_ref(fp->metadata.name,fp->metadata.type);
 
-            jason_t *file;
+            json_t *file;
             file = _fil_get_json_metadata(fp->metadata.name,fp->metadata.type);
             
             if (_fil_get_n_ref(file) == 0 && _fil_is_deleted(file) == 1) {
@@ -109,7 +110,7 @@ int fil_close(FILErados_t* fp) {
 		free(fp);
 		fp = NULL;
 	} 
-	return 0
+	return 0;
 }
 
 
@@ -126,23 +127,23 @@ FILErados_t* fil_open_create(
 
 	if (!block_size) {
 		fprintf(stderr, "Error: uninitialized block size value, can't be zero\n");
-		return -1;
+		return NULL;
 	}
 
 	if (!filepath) {
 		fprintf(stderr, "Error: uninitialized file path can't be null\n");
-		return -1;
+		return NULL;
 	}
 
 	/* checking if the path exists in the metadata */
 	if (_fil_find_in_metadata(filepath,type) == -1) {
 		/* Adding the path to the metadata */
-		if (_fil_add_metadata(filepath,type,block_size) < 0) {
+		if (_fil_add_file_metadata(filepath,type,0,block_size) < 0) {
 			return NULL;
 		}
 	}
 	
-	return fil_open(filepath, fp);
+	return fil_open(filepath, type);
 }
 
 
@@ -259,7 +260,7 @@ FILErados_t* fil_open(
 ssize_t fil_read(
 	FILErados_t*    fp,	/* handle to a file */
 	void*		buf,	/* buffer where to read */
-	size_t		len	/* number of bytes to read */
+	size_t		len,	/* number of bytes to read */
 	size_t		offset  /* offset from where to start reading */
 ) {
 	size_t bytes_read = 0;
@@ -289,7 +290,7 @@ ssize_t fil_read(
 	block_offset = block_offset*fp->metadata.block_size; /* now point to the beginning of a block */
 
 	/* read first object */	
-	obj_name = asprintf("%s_%zu",fp->metadata.name,block_offset);
+	obj_name = (char *) (intptr_t) asprintf("%s_%zu",fp->metadata.name,block_offset);
     if ((fp->metadata.block_size - (offset - block_offset)) > len) {
         /* all fit in the first block */
         if (bytes_read = rados_read(rados_io_context,obj_name,buf,len,
@@ -315,13 +316,13 @@ ssize_t fil_read(
     while (total_bytes_read < len) {
         /* The next block */
         block_offset += fp->metadata.block_size;
-        obj_name = asprintf("%s_%zu",fp->metadata.name,block_offset);
+        obj_name = (char *) (intptr_t) asprintf("%s_%zu",fp->metadata.name,block_offset);
         
         if ((len - total_bytes_read) > fp->metadata.block_size) {
             /* reading the full block */
             if (bytes_read = rados_read(rados_io_context,obj_name,buf+total_bytes_read,
                     fp->metadata.block_size,0) < 0) {
-                fprintf(stderr, "Error: Could not read %d at offset %zu\n",obj_name,offset);
+                fprintf(stderr, "Error: Could not read %s\n",obj_name);
                 free(obj_name);
                 return -1;
             }
@@ -329,7 +330,7 @@ ssize_t fil_read(
             /* reading the reminder */
             if (bytes_read = rados_read(rados_io_context,obj_name,buf+total_bytes_read,
                     len - total_bytes_read,0) < 0) {
-                fprintf(stderr, "Error: Could not read %d at offset %zu\n",obj_name,offset);
+                fprintf(stderr, "Error: Could not read %s\n",obj_name);
                 free(obj_name);
                 return -1;
             }   
@@ -357,7 +358,7 @@ ssize_t fil_read(
 int fil_write(	
     FILErados_t*    fp,	/* handle to a file */
 	void*		buf,	/* buffer where to get data to write */
-	size_t		len	    /* number of bytes to write */
+	size_t		len,    /* number of bytes to write */
 	size_t		offset  /* offset from where to start reading */
     ) 
 {
@@ -389,7 +390,7 @@ int fil_write(
                                                             block to write to */
 
 	/* write to the first object */	
-	obj_name = asprintf("%s_%zu",fp->metadata.name,block_offset);
+	obj_name = (char *) (intptr_t) asprintf("%s_%zu",fp->metadata.name,block_offset);
     if ((fp->metadata.block_size - (offset - block_offset)) > len) {
         /* all fit in the first block */
         if (bytes_written = rados_write(rados_io_context,obj_name,buf,
@@ -407,10 +408,44 @@ int fil_write(
     }
 	total_bytes_written += bytes_written;
 	free(obj_name);
-    
-    /* STOPPED HERE 2016-03-16 */
 
+    /* now, the offset part is done, just need to care about the 
+     * number of bytes to write 
+     */
+    while (total_bytes_written < len) {
+        /* The next block */
+        block_offset += fp->metadata.block_size;
+        obj_name = (char *) (intptr_t) asprintf("%s_%zu",fp->metadata.name,block_offset);
+        
+        if ((len - total_bytes_written) > fp->metadata.block_size) {
+            /* writing a full block */
+            if (bytes_written = rados_write(rados_io_context,obj_name,buf+total_bytes_written,
+                    fp->metadata.block_size,0) < 0) {
+                fprintf(stderr, "Error: Could not write %s\n",obj_name);
+                free(obj_name);
+                return -1;
+            }
+        } else {
+            /* writing the reminder */
+            if (bytes_written = rados_read(rados_io_context,obj_name,buf+total_bytes_written,
+                    len - total_bytes_written,0) < 0) {
+                fprintf(stderr, "Error: Could not write %s\n",obj_name);
+                free(obj_name);
+                return -1;
+            }   
+        }
+
+        total_bytes_written += bytes_written;
+        free(obj_name);
+        
+        /* Maybe we are done */
+        if (bytes_written == 0) {
+            /* no more */
+            break;
+        }
+    }
     
+    return total_bytes_written;
 
 }
 
@@ -437,15 +472,15 @@ fil_update_mtime() {
         return the block_size if successfull (> 0), -1 if error 
 */
 int _fil_get_block_size(
-	jason_t *file   /* json file element */
+	json_t *jfile   /* json file element */
 	) 
 {
     
-    if (json_is_object(file)) { 
+    if (json_is_object(jfile)) { 
         /* get the block_size */
         unsigned int block_size;
         json_t *j_block_size;
-        j_block_size = json_get_object(file,"block_size");
+        j_block_size = (json_t *) (intptr_t) json_object_get(jfile,"block_size");
         if(!json_is_integer(j_block_size)) {
             fprintf(stderr, "error: block_size element returned is not an integer\n");
             json_decref(j_block_size);
@@ -466,15 +501,15 @@ int _fil_get_block_size(
         Returns: number of reference if successfull (> 0), -1 if error 
 */
 int _fil_get_n_ref(
-	jason_t *file   /* json file element */
+	json_t *jfile   /* json file element */
 	) 
 {
     
-    if (json_is_object(file)) { 
+    if (json_is_object(jfile)) { 
         /* get the n_ref */
         unsigned int n_ref;
         json_t *j_n_ref;
-        j_n_ref = json_get_object(file,"n_ref");
+        j_n_ref = (json_t *) (intptr_t) json_object_get(jfile,"n_ref");
         if(!json_is_integer(j_n_ref)) {
             fprintf(stderr, "error: n_ref element returned is not an integer\n");
             json_decref(j_n_ref);
@@ -498,7 +533,7 @@ int _fil_get_n_ref(
 int _fil_set_n_ref(
 	char* filepath,   /* file path like sbtest/sbtest.ibd */
 	os_file_type_t type,
-    unsigned int delta  /* typically 1 or -1 */
+    int delta  /* typically 1 or -1 */
 	) 
 {
 	/* TODO:  may need a mutex when used with multiple threads */
@@ -511,9 +546,9 @@ int _fil_set_n_ref(
 
     unsigned int n_ref;
     json_t *j_n_ref;
-    j_n_ref = json_object_get(file,"n_ref");
+    j_n_ref = (json_t *) (intptr_t) json_object_get(file,"n_ref");
     if(!json_is_number(j_n_ref)) {
-        fprintf(stderr, "error for entry  %d: n_ref is not a number\n", i + 1);
+        fprintf(stderr, "error for entry  %d: n_ref is not a number\n", index + 1);
         json_decref(file);
         json_decref(j_n_ref);
         return -1;
@@ -554,7 +589,7 @@ int _fil_increment_n_ref(
 	os_file_type_t type
 	) 
 {
-    return fil_set_n_ref(filepath,type,1);
+    return _fil_set_n_ref(filepath,type,1);
 }
 
 /*      
@@ -566,7 +601,7 @@ int _fil_decrement_n_ref(
 	os_file_type_t type
 	) 
 {
-    return fil_set_n_ref(filepath,type,-1);
+    return _fil_set_n_ref(filepath,type,-1);
 }
 
 
@@ -575,7 +610,7 @@ int _fil_decrement_n_ref(
         Returns: 0 if not deleted, 1 if deleted and -1 on error
 */
 unsigned int _fil_is_deleted(
-	jason_t *file   /* json file element */
+	json_t *file   /* json file element */
 	) 
 {
     
@@ -583,7 +618,7 @@ unsigned int _fil_is_deleted(
         /* get the n_ref */
         unsigned int deleted;
         json_t *j_deleted;
-        j_deleted = json_get_object(file,"deleted");
+        j_deleted = (json_t *) (intptr_t) json_object_get(file,"deleted");
         if(!json_is_integer(j_deleted)) {
             fprintf(stderr, "error: deleted element returned is not an integer\n");
             json_decref(j_deleted);
@@ -606,12 +641,12 @@ unsigned int _fil_is_deleted(
 int _fil_update_size(
 	char* filepath,   /* file path like sbtest/sbtest.ibd */
 	os_file_type_t type, /* file object type, seen enum def */
-	new_size size_t  /* new file size */
+	size_t new_size /* new file size */
 	) 
 {
 	/* TODO:  may need a mutex when used with multiple threads */
 	int index = _fil_find_in_metadata(filepath,type);
-	json_t *file = json_array_get(metadata_json,index);
+	json_t *file = (json_t *) (intptr_t) json_array_get(metadata_json,index);
 	if (!file) {
 		fprintf(stderr, "Error extracting the file object from the metadata\n");
 		return -1;
@@ -648,7 +683,7 @@ int _fil_set_deleted(
 {
 	/* TODO:  may need a mutex when used with multiple threads */
 	int index = _fil_find_in_metadata(filepath,type);
-	json_t *file = json_array_get(metadata_json,index);
+	json_t *file = (json_t *) (intptr_t) json_array_get(metadata_json,index);
 	if (!file) {
 		fprintf(stderr, "Error extracting the file object from the metadata\n");
 		return -1;
@@ -689,7 +724,7 @@ int _fil_delete_rados_objects(
     size_t pos = 0;
     char* obj_name;
     while (1) {
-        obj_name = asprintf("%s_%zu",filepath,pos);
+        obj_name = (char *) (intptr_t) asprintf("%s_%zu",filepath,pos);
         if (!rados_remove(rados_io_context,obj_name)) {
             if (DEBUG) {
                 fprintf(stderr, "DEBUG: rados_remove object %s\n", obj_name);
@@ -720,7 +755,7 @@ int _fil_load_metadata_json()
 	}
 
 	/* test if ioctx is set */
-	rados_pool_stat_t pstat;
+	struct rados_pool_stat_t pstat;
 	if (rados_ioctx_pool_stat(rados_io_context,&pstat) < 0) {
 		fprintf(stderr, "Error accessing Ceph, invalid IO context\n");
 		return -1;
@@ -736,14 +771,14 @@ int _fil_load_metadata_json()
 
 	/* Allocate the buffer for the metadata */	
 	char		*bufmetadata;
-	bufmetadata = (char *) malloc(metadata_size);
+	bufmetadata = (char *) (intptr_t) malloc(metadata_size);
 	if (!bufmetadata) {
 		fprintf(stderr, "Error allocating memory for Metadata buffer\n");
 		return -1;
 	}
 
 	/* Read the metadata object */
-	if (rados_read(rados_io_context,bufmetadata,metadata_size,0) < 0) {
+	if (rados_read(rados_io_context,METADATA_OBJECT_NAME,bufmetadata,metadata_size,0) < 0) {
 		fprintf(stderr, "Error reading metadata from rados\n");
 		free(bufmetadata);
 		return -1;
@@ -763,7 +798,8 @@ int _fil_load_metadata_json()
     /* Some files may have been deleted but kept open, we need to check and
      * cleanup in case the application crashed
      */
-    for(i=json_array_size(metadata_json) - 1;i >= 0;i--) {
+    int i;
+    for(i = json_array_size(metadata_json) - 1;i >= 0;i--) {
         /* going backward because we may have to remove elements */
         char *file_path;
         unsigned int block_size;
@@ -771,12 +807,12 @@ int _fil_load_metadata_json()
             
         json_t *jfile, *jdeleted, *jpath, *jblock_size;
         jfile = json_array_get(metadata_json,i);
-        if (!file) {
+        if (!jfile) {
             fprintf(stderr, "Error retrieving metadata for file %d: %s\n", i, error_json.text);
             return -1;
         }
         
-        jdeleted = json_get_object(jfile,"deleted");
+        jdeleted = (json_t *) (intptr_t) json_object_get(jfile,"deleted");
 		if(!json_is_integer(jdeleted)) {
             fprintf(stderr, "error: deleted element returned is not an integer\n");
             json_decref(jfile);
@@ -791,7 +827,7 @@ int _fil_load_metadata_json()
                  * and block_size
                  */
                  
-                jpath = json_get_object(file,"path");
+                jpath = (json_t *) (intptr_t) json_object_get(jfile,"path");
                 if(!json_is_string(jpath)) {
                     fprintf(stderr, "error: path element returned is not a string\n");
                     json_decref(jfile);
@@ -802,7 +838,7 @@ int _fil_load_metadata_json()
                     json_decref(jpath);
                 }
                 
-                jblock_size = json_get_object(file,"block_size");
+                jblock_size = (json_t *) (intptr_t) json_object_get(jfile,"block_size");
                 if(!json_is_integer(jblock_size)) {
                     fprintf(stderr, "error: block_size element returned is not an integer\n");
                     json_decref(jblock_size);
@@ -845,7 +881,7 @@ int _fil_update_metadata_json() {
 	}
 
 	/* test if ioctx is set */
-	rados_pool_stat_t pstat;
+	struct rados_pool_stat_t pstat;
 	if (rados_ioctx_pool_stat(rados_io_context,&pstat) < 0) {
 		fprintf(stderr, "Error accessing Ceph, invalid IO context\n");
 		return -1;
@@ -892,47 +928,48 @@ int _fil_find_in_metadata(
         return -2;
 	}
 
+    int i;
+    json_t *jdata, *jpath, *jtype, *jdeleted;
 	for(i = 0; i < json_array_size(metadata_json); i++) {
-		json_t *fdata, *fpath, *ftype, *fdeleted;
-
-		fdata = json_array_get(metadata_json, i);
-        if(!json_is_object(fdata)) {
+		
+		jdata = (json_t *) (intptr_t) json_array_get(metadata_json, i);
+        if(!json_is_object(jdata)) {
             fprintf(stderr, "error, file entry %d is not a json object\n", i + 1);
             json_decref(metadata_json);
             return -2;
 		}
 
-		fpath = json_object_get(data, "path");
-		if(!json_is_string(fpath)) {
+		jpath = (json_t *) (intptr_t) json_object_get(jdata, "path");
+		if(!json_is_string(jpath)) {
 			fprintf(stderr, "error for entry %d, fpath is not a string\n", i + 1);
-			json_decref(fdata);
+			json_decref(jdata);
 			json_decref(metadata_json);
             return -2;
         }
 		
-		ftype = json_object_get(data,"type");
-		if(!json_is_number(ftype)) {
+		jtype = (json_t *) (intptr_t) json_object_get(jdata,"type");
+		if(!json_is_number(jtype)) {
             fprintf(stderr, "error for entry  %d: ftype is not a number\n", i + 1);
-			json_decref(fdata);
-			json_decref(fpath);
+			json_decref(jdata);
+			json_decref(jpath);
             json_decref(metadata_json);
             return -2;
 		}
 
-		if ((strcmp(filepath,json_string_value(fpath)) == 0 ) && type == (os_file_type_t) json_integer_value(ftype)) {
-			json_decref(fpath);
-			json_decref(fdata);
-			json_decref(ftype);
-			json_decref(fdeleted);
+		if ((strcmp(filepath,json_string_value(jpath)) == 0 ) && type == (os_file_type_t) json_integer_value(jtype)) {
+			json_decref(jpath);
+			json_decref(jdata);
+			json_decref(jtype);
+			json_decref(jdeleted);
 			return i;
 		}
 
-		json_decref(fdata);
+		json_decref(jdata);
 	}
-	json_decref(fpath);
-	json_decref(fdata);
-	json_decref(ftype);
-	json_decref(fdeleted);
+	json_decref(jpath);
+	json_decref(jdata);
+	json_decref(jtype);
+	json_decref(jdeleted);
 	
 	return -1;
 }
@@ -955,7 +992,7 @@ int _fil_add_file_metadata(
 	}
 	
 	if (_fil_find_in_metadata(filepath,type) >= 0) {
-        fprintf(stderr, "error: file %s can't be added, it already exists in metadata\n");
+        fprintf(stderr, "error: file %s can't be added, it already exists in metadata\n",filepath);
 		return -1;
 	}
 
@@ -965,7 +1002,7 @@ int _fil_add_file_metadata(
 		return -1;
 	}
 
-	json_t *jsonObj = json_object();
+	json_t *jsonObj = (json_t *) (intptr_t) json_object();
 	if (json_object_set_new(jsonObj,"type",json_integer(type)) < 0) {
         fprintf(stderr, "error: unable to add type to new json object\n");
         json_decref(jsonObj);
@@ -1052,12 +1089,12 @@ json_t* _fil_get_json_metadata(
 {
 	/* TODO:  may need a mutex when used with multiple threads */
 	int index = _fil_find_in_metadata(filepath,type);
-
+    json_t *file;
+    
 	if(index < 0) {
 		/* error should be reported to stderr in _fil_find_in_metadata */
         return NULL;
 	} else {
-		json_t *file, *path, *size, *block_size, *type, *deleted, *nref;
 		file = json_array_get(metadata_json,index);
 		if (!file) {
 			fprintf(stderr, "Error extracting the file object from the metadata\n");
@@ -1081,97 +1118,83 @@ int _fil_get_file_metadata(
 	/* TODO:  may need a mutex when used with multiple threads */
 	int index = _fil_find_in_metadata(filepath,type);
 
+    json_t *jfile, *jpath, *jsize, *jblock_size, *jtype, *jdeleted, *jn_ref;
 	if(index < 0) {
 		/* error should be reported to stderr in _fil_find_in_metadata */
         return -1;
 	} else {
-		json_t *file, *path, *size, *block_size, *type, *deleted, *nref;
-		file = json_array_get(metadata_json,index);
-		if (!file) {
+		jfile = json_array_get(metadata_json,index);
+		if (!jfile) {
 			fprintf(stderr, "Error extracting the file object from the metadata\n");
 			return -1;
 		}
 		
-		path = json_get_object(file,"path");
-		if(!json_is_string(path)) {
+		jpath = (json_t *) (intptr_t) json_object_get(jfile,"path");
+		if(!json_is_string(jpath)) {
             fprintf(stderr, "error: path element returned is not a string\n");
-            json_decref(file);
+            json_decref(jfile);
             return -1;
         } else {
-			fp->metadata.name = strdup(json_string_value(path));
+			fp->metadata.name = strdup(json_string_value(jpath));
 		}
-		json_decref(path);
+		json_decref(jpath);
 
-		type = json_get_object(file,"type");
-		if(!json_is_integer(type)) {
+		jtype = (json_t *) (intptr_t) json_object_get(jfile,"type");
+		if(!json_is_integer(jtype)) {
             fprintf(stderr, "error: type element returned is not an integer\n");
-			json_decref(path);
-            json_decref(file);
+            json_decref(jfile);
             return -1;
         } else {
-			fp->metadata.type = (int) json_integer_value(type);
+			fp->metadata.type = (int) json_integer_value(jtype);
 		}
-		json_decref(type);
+		json_decref(jtype);
 
-		deleted = json_get_object(file,"deleted");
-		if(!json_is_integer(deleted)) {
+		jdeleted = (json_t *) (intptr_t) json_object_get(jfile,"deleted");
+		if(!json_is_integer(jdeleted)) {
             fprintf(stderr, "error: deleted element returned is not an integer\n");
-			json_decref(path);
-			json_decref(type);
-            json_decref(file);
+            json_decref(jfile);
+            json_decref(jdeleted);
             return -1;
         } else {
-			fp->metadata.deleted = (int) json_integer_value(deleted);
+			fp->metadata.deleted = (int) json_integer_value(jdeleted);
 		}
-		json_decref(deleted);
+		json_decref(jdeleted);
 
-		block_size = json_get_object(file,"block_size");
-		if(!json_is_integer(block_size)) {
+		jblock_size = (json_t *) (intptr_t) json_object_get(jfile,"jblock_size");
+		if(!json_is_integer(jblock_size)) {
             fprintf(stderr, "error: block_size element returned is not an integer\n");
-			json_decref(path);
-			json_decref(type);
-			json_decref(deleted);
-            json_decref(file);
+            json_decref(jfile);
+            json_decref(jblock_size);
             return -1;
         } else {
-			fp->metadata.block_size = (unsigned int) json_integer_value(block_size);
+			fp->metadata.block_size = (unsigned int) json_integer_value(jblock_size);
 		}
-		json_decref(block_size);
+		json_decref(jblock_size);
 
-		size = json_get_object(file,"size");
-		if(!json_is_integer(size)) {
+		jsize = (json_t *) (intptr_t) json_object_get(jfile,"size");
+		if(!json_is_integer(jsize)) {
             fprintf(stderr, "error: size element returned is not an integer\n");
-			json_decref(path);
-			json_decref(type);
-			json_decref(deleted);
-            json_decref(file);
+            json_decref(jfile);
+       		json_decref(jsize);
             return -1;
         } else {
-			fp->metadata.size = (size_t) json_integer_value(size);
+			fp->metadata.size = (size_t) json_integer_value(jsize);
 		}
-		json_decref(size);
+		json_decref(jsize);
 
-		nref = json_get_object(file,"nref");
-		if(!json_is_integer(nref)) {
+		jn_ref = (json_t *) (intptr_t) json_object_get(jfile,"nref");
+		if(!json_is_integer(jn_ref)) {
             fprintf(stderr, "error: nref element returned is not an integer\n");
-			json_decref(path);
-			json_decref(type);
-			json_decref(deleted);
-            json_decref(size);
-            json_decref(file);
+			json_decref(jn_ref);
+            json_decref(jfile);
             return -1;
         } else {
-			fp->metadata.nref = (size_t) json_integer_value(nref);
+			fp->metadata.n_ref = (size_t) json_integer_value(jn_ref);
 		}
-		json_decref(nref);
+		json_decref(jn_ref);
 	}	
-	json_decref(file);
+	json_decref(jfile);
 
 	return 0;
 }
-
-
-
-
-
 
