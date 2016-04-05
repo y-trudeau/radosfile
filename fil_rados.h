@@ -1,3 +1,4 @@
+#include <jansson.h>
 
 /* Structure to perform the role of a file handle with rados */
 /* Borrowed from os0file.h */

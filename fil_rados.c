@@ -28,27 +28,27 @@ int fil_rados_init(
 	) 
 {
 	int err;
-	if (err = rados_create2(&ceph_cluster, cluster_name, user_name, 0) < 0) {
+	if ((err = rados_create2(&ceph_cluster, cluster_name, user_name, 0)) < 0) {
 		fprintf(stderr, "Error %d: could not create the ceph cluster object\n%s\n",-err,strerror(-err));
 		return -1;
 	}
 
 	/* Read a Ceph configuration file to configure the cluster handle. */
-    if (err = rados_conf_read_file(ceph_cluster, conf_file) < 0) {
+    if ((err = rados_conf_read_file(ceph_cluster, conf_file)) < 0) {
         fprintf(stderr, "Error %d: cannot read the ceph configuration file\n%s\n", -err, strerror(-err));
 	    rados_shutdown(ceph_cluster);
         return -1;
     }
 
 	/* Connecting to the cluster */
-	if (err = rados_connect(ceph_cluster) < 0) {
+	if ((err = rados_connect(ceph_cluster)) < 0) {
         fprintf(stderr, "Error %d: cannot connect to the ceph cluster\n%s\n", -err, strerror(-err));
         rados_shutdown(ceph_cluster);
         return -1;
 	}
 
 	/* Opening the IO context */
-	if (err = rados_ioctx_create(ceph_cluster, pool_name, &rados_io_context) < 0) {
+	if ((err = rados_ioctx_create(ceph_cluster, pool_name, &rados_io_context)) < 0) {
         fprintf(stderr, "Error %d: cannot open rados pool: %s\n%s\n", -err, pool_name, strerror(-err));
         rados_shutdown(ceph_cluster);
         return -1;
@@ -267,7 +267,6 @@ ssize_t fil_read(
 	size_t total_bytes_read = 0;
 	size_t block_offset;
 	char*	obj_name;  
-	char*	rados_buf;
 
     /* TODO, implementing aio here could be very efficient on multi block reads */
 
@@ -293,15 +292,15 @@ ssize_t fil_read(
 	obj_name = (char *) (intptr_t) asprintf("%s_%zu",fp->metadata.name,block_offset);
     if ((fp->metadata.block_size - (offset - block_offset)) > len) {
         /* all fit in the first block */
-        if (bytes_read = rados_read(rados_io_context,obj_name,buf,len,
-                offset - block_offset) < 0) {
+        if ((bytes_read = rados_read(rados_io_context,obj_name,buf,len,
+                offset - block_offset)) < 0) {
             fprintf(stderr, "Error: Could not read %s at offset %zu\n",obj_name,offset);
             free(obj_name);
             return -1;
         }
     } else {
-        if (bytes_read = rados_read(rados_io_context,obj_name,buf,
-                fp->metadata.block_size - offset,offset - block_offset) < 0) {
+        if ((bytes_read = rados_read(rados_io_context,obj_name,buf,
+                fp->metadata.block_size - offset,offset - block_offset)) < 0) {
             fprintf(stderr, "Error: Could not read %s at offset %zu\n",obj_name,offset);
             free(obj_name);
             return -1;
@@ -320,16 +319,16 @@ ssize_t fil_read(
         
         if ((len - total_bytes_read) > fp->metadata.block_size) {
             /* reading the full block */
-            if (bytes_read = rados_read(rados_io_context,obj_name,buf+total_bytes_read,
-                    fp->metadata.block_size,0) < 0) {
+            if ((bytes_read = rados_read(rados_io_context,obj_name,buf+total_bytes_read,
+                    fp->metadata.block_size,0)) < 0) {
                 fprintf(stderr, "Error: Could not read %s\n",obj_name);
                 free(obj_name);
                 return -1;
             }
         } else {
             /* reading the reminder */
-            if (bytes_read = rados_read(rados_io_context,obj_name,buf+total_bytes_read,
-                    len - total_bytes_read,0) < 0) {
+            if ((bytes_read = rados_read(rados_io_context,obj_name,buf+total_bytes_read,
+                    len - total_bytes_read,0)) < 0) {
                 fprintf(stderr, "Error: Could not read %s\n",obj_name);
                 free(obj_name);
                 return -1;
@@ -366,7 +365,6 @@ int fil_write(
 	size_t total_bytes_written = 0;
 	size_t block_offset;
 	char*	obj_name;  
-	char*	rados_buf;
 
     /* TODO, implementing aio here could be very efficient on multi block writes */
 
@@ -393,17 +391,18 @@ int fil_write(
 	obj_name = (char *) (intptr_t) asprintf("%s_%zu",fp->metadata.name,block_offset);
     if ((fp->metadata.block_size - (offset - block_offset)) > len) {
         /* all fit in the first block */
-        if (bytes_written = rados_write(rados_io_context,obj_name,buf,
-                len,offset - block_offset) < 0) {
+        if ((bytes_written = rados_write(rados_io_context,obj_name,buf,
+                len,offset - block_offset)) < 0) {
             fprintf(stderr, "Error: Could not write %s at offset %zu\n",obj_name,offset);
             free(obj_name);
             return -1;
         }
     } else {
-        if (bytes_written = rados_write(rados_io_context,obj_name,buf,fp->metadata.block_size-offset,offset) < 0) {
-                    fprintf(stderr, "Error: Could not write %s at offset %zu\n",obj_name,offset);
-                    free(obj_name);
-                    return -1;
+        if ((bytes_written = rados_write(rados_io_context,obj_name,
+                buf,fp->metadata.block_size-offset,offset)) < 0) {
+            fprintf(stderr, "Error: Could not write %s at offset %zu\n",obj_name,offset);
+            free(obj_name);
+            return -1;
         }        
     }
 	total_bytes_written += bytes_written;
@@ -419,16 +418,16 @@ int fil_write(
         
         if ((len - total_bytes_written) > fp->metadata.block_size) {
             /* writing a full block */
-            if (bytes_written = rados_write(rados_io_context,obj_name,buf+total_bytes_written,
-                    fp->metadata.block_size,0) < 0) {
+            if ((bytes_written = rados_write(rados_io_context,obj_name,buf+total_bytes_written,
+                    fp->metadata.block_size,0)) < 0) {
                 fprintf(stderr, "Error: Could not write %s\n",obj_name);
                 free(obj_name);
                 return -1;
             }
         } else {
             /* writing the reminder */
-            if (bytes_written = rados_read(rados_io_context,obj_name,buf+total_bytes_written,
-                    len - total_bytes_written,0) < 0) {
+            if ((bytes_written = rados_read(rados_io_context,obj_name,buf+total_bytes_written,
+                    len - total_bytes_written,0)) < 0) {
                 fprintf(stderr, "Error: Could not write %s\n",obj_name);
                 free(obj_name);
                 return -1;
@@ -573,6 +572,8 @@ int _fil_set_n_ref(
 	}
 
 	json_decref(file);
+    
+    return 0;
 
     /* 
      * We don't need to update metadata on disk, n_ref is useless there
@@ -734,13 +735,13 @@ int _fil_delete_rados_objects(
                 fprintf(stderr, "DEBUG: done removing ojects from rados"); 
             }
             free(obj_name);
-            break;		
+            break;
         }
         /* increasing the position by the block_size */
         pos += block_size;
         free(obj_name);
     }
-
+    return 0;
 }
 
 /* 	
@@ -907,9 +908,10 @@ int _fil_update_metadata_json() {
 
 /* 	
 	(pseudoPrivate) find a file in the metadata
-	return -2 on error
-	return -1 if the path doesn't not exist 
-	return the array index in metadata if the file exists
+	returns -3 on error
+    returns -2 if the file exists but is deleted (but still opened)
+	returns -1 if the path doesn't not exist 
+	returns the array index in metadata if the file exists
 */
 int _fil_find_in_metadata(
 	char* filepath,   /* file path like sbtest/sbtest.ibd */
@@ -925,7 +927,7 @@ int _fil_find_in_metadata(
 	if(!json_is_array(metadata_json)) {
         fprintf(stderr, "error: metadata_json is not an array\n");
 		json_decref(metadata_json);
-        return -2;
+        return -3;
 	}
 
     int i;
@@ -936,7 +938,7 @@ int _fil_find_in_metadata(
         if(!json_is_object(jdata)) {
             fprintf(stderr, "error, file entry %d is not a json object\n", i + 1);
             json_decref(metadata_json);
-            return -2;
+            return -3;
 		}
 
 		jpath = (json_t *) (intptr_t) json_object_get(jdata, "path");
@@ -944,7 +946,7 @@ int _fil_find_in_metadata(
 			fprintf(stderr, "error for entry %d, fpath is not a string\n", i + 1);
 			json_decref(jdata);
 			json_decref(metadata_json);
-            return -2;
+            return -3;
         }
 		
 		jtype = (json_t *) (intptr_t) json_object_get(jdata,"type");
@@ -953,8 +955,25 @@ int _fil_find_in_metadata(
 			json_decref(jdata);
 			json_decref(jpath);
             json_decref(metadata_json);
-            return -2;
+            return -3;
 		}
+        
+		jdeleted = (json_t *) (intptr_t) json_object_get(jdata,"deleted");
+		if(!json_is_number(jtype)) {
+            fprintf(stderr, "error for entry  %d: jdeleted is not an integer\n", i + 1);
+			json_decref(jdata);
+			json_decref(jpath);
+            json_decref(metadata_json);
+            return -3;
+		}        
+
+        if (json_integer_value(jdeleted) == 1) {
+            json_decref(jpath);
+			json_decref(jdata);
+			json_decref(jtype);
+			json_decref(jdeleted);
+            return -2;
+        }
 
 		if ((strcmp(filepath,json_string_value(jpath)) == 0 ) && type == (os_file_type_t) json_integer_value(jtype)) {
 			json_decref(jpath);
